@@ -1,0 +1,248 @@
+/*
+  Arduino & OpenEnergyMonitor 
+  
+  This sketch connects to an emoncms server and makes a request using
+  Arduino Ethernet shield (or other based on Wiznet W5100) or an 
+  Arduino Wifi Shield
+  
+  author Mirco Piccin aka pitusso
+  
+  based on 
+  http://arduino.cc/en/Tutorial/WebClientRepeating
+*/
+
+char foo;  //without a simple variable declaration, use of #ifdef at the top of your code raises an error!
+
+//if using a W5100 based Ethernet shield, comment out the following line; 
+//leave untouched if using Arduino Wifi Shield
+//  #define WIFI
+
+#include <SPI.h>
+
+#ifdef WIFI
+  #include <WiFi.h>
+  #include <WiFiClient.h>
+#else
+  #include <Ethernet.h>
+#endif
+
+// Include Emon Library
+#include "EmonLib.h"
+
+#define W5100_CS  10
+#define SDCARD_CS 4
+
+//network configuration, WIRED or WIFI
+#ifdef WIFI
+  //if using WIFI 
+  char ssid[] = "ssid"; //  your network SSID (name) 
+  char pass[] = "password";    // your network password (use for WPA, or use as key for WEP)
+
+  int status = WL_IDLE_STATUS;
+  int keyIndex = 0;            // your network key Index number (needed only for WEP)
+  
+  WiFiClient client;
+#else
+  //if using WIRED
+  byte mac[] = {0x08, 0x2F, 0xD3, 0xBC, 0xB8, 0xFF};
+  
+  // fill in an available IP address on your network here,
+  // for auto configuration:
+  IPAddress ip(192, 168, 1, 60);
+  IPAddress subnet(255, 255, 255, 0);
+  IPAddress DNS(8, 8, 8, 8);
+  IPAddress gw(192, 168, 1, 1);
+  
+  EthernetClient client;
+#endif
+
+// Create an Emon instance
+EnergyMonitor emon10;                   
+
+//Emoncms configurations
+char server[] = "emoncms.org";     // name address for emoncms.org
+//IPAddress server(192, 168, 1, 111);  // numeric IP for emoncms.org (no DNS)
+
+String apikey = "643d9d4e2b9705e8c24fe8ff9ae57d5d";  //api key
+int node = 10; //if 0, not used
+
+unsigned long lastConnectionTime = 0;          // last time you connected to the server, in milliseconds
+boolean lastConnected = false;                 // state of the connection last time through the main loop
+const unsigned long postingInterval = 10*1000;  // delay between updates, in milliseconds
+
+#include <PZEM004T.h> //https://github.com/olehs/PZEM004T
+PZEM004T pzem1(&Serial1);                                        /// use Serial
+IPAddress ip1(192, 168, 1, 101);
+
+float Voltage1 = 0, Voltage1REAL;
+float Current1 = 0, Current1REAL;
+float Power1 = 0, Power1REAL;
+float Energy1 = 0, Energy1REAL;
+
+
+void setup() {
+  // start serial port:
+  Serial.begin(9600);
+
+  // Display a welcome message
+  Serial.println("Emoncms client starting...");
+
+#ifdef WIFI
+  // check for the presence of the shield:
+  if (WiFi.status() == WL_NO_SHIELD) {
+    Serial.println("WiFi shield not present"); 
+    // don't continue:
+    while(true);
+  } 
+  
+  // attempt to connect to Wifi network:
+  while ( status != WL_CONNECTED) { 
+    Serial.print("Attempting to connect to SSID: ");
+    Serial.println(ssid);
+    // Connect to WPA/WPA2 network. 
+    status = WiFi.begin(ssid, pass);
+  
+    // wait 10 seconds for connection:
+    delay(10000);
+  } 
+  Serial.println("Connected to wifi");
+#else
+  if (!Ethernet.begin(mac)) {
+    // if DHCP fails, start with a hard-coded address:
+    Serial.println("Failed to get an IP address using DHCP, forcing manually");
+    Ethernet.begin(mac, ip, dns, gw, subnet);
+  }
+#endif  
+
+  printStatus();
+}
+
+void loop() {
+  
+  // if there's incoming data from the net connection.
+  // send it out the serial port.  This is for debugging
+  // purposes only:
+  if (client.available()) {
+    char c = client.read();
+    Serial.print(c);
+  }
+
+  // if there's no net connection, but there was one last time
+  // through the loop, then stop the client:
+  if (!client.connected() && lastConnected) {
+    Serial.println();
+    Serial.println("Disconnecting...");
+    client.stop();
+  }
+  
+  // if you're not connected, and at least <postingInterval> milliseconds have
+  // passed sinceyour last connection, then connect again and
+  // send data:
+  if(!client.connected() && (millis() - lastConnectionTime > postingInterval)) {
+   
+    //read sensors
+    //lightValue = analogRead(lightSensorPin);
+    //tempValue = getCelsius(analogRead(tempSensorPin));
+    //Irms = emon1.calcIrms(1480);
+    
+    //Print values (debug)
+    Serial.println();
+    Serial.print("Voltage : ");
+    Serial.print(Voltage1REAL);
+    Serial.print(",Current :");
+    Serial.print(Current1REAL);
+    Serial.print(" ; Power :");
+    Serial.print(Power1REAL);
+    Serial.print(" ; Energy : ");
+    Serial.println(Energy1REAL);
+      
+    //send values
+    sendData();
+  }
+  // store the state of the connection for next time through
+  // the loop:
+  lastConnected = client.connected();
+}
+
+// this method makes a HTTP connection to the server:
+void sendData() {
+  // if there's a successful connection:
+  if (client.connect(server, 80)) {
+    Serial.println("Connecting...");
+    // send the HTTP GET request:
+    client.print("GET /api/post?apikey=");
+    client.print(apikey);
+    if (node > 0) {
+      client.print("&node=");
+      client.print(node);
+    }
+  float Voltage1 = pzem1.voltage(ip1);
+  if (Voltage1 >= 0.0) {
+    Voltage1REAL = Voltage1;  //V
+  }
+  float Current1 = pzem1.current(ip1);
+  if (Current1 >= 0.0) {
+    Current1REAL = Current1;     //A
+  }
+  float Power1 = pzem1.power(ip1);
+  if (Power1 >= 0.0) {
+    Power1REAL = Power1;        //W
+  }
+  float Energy1 = pzem1.energy(ip1);
+  if (Energy1 >= 0.0) {
+    Energy1REAL = Energy1;   ///Wh
+  }    
+    client.print("&json={Voltage");
+    client.print(":");
+    client.print(Voltage1REAL);
+    client.print(",Current:");
+    client.print(Current1REAL);
+    client.print(",Power:");
+    client.print(Power1REAL);
+    client.print(",Energy:");
+    client.print(Energy1REAL);
+    client.println("} HTTP/1.1");
+    client.println("Host:emoncms.org");
+    client.println("User-Agent: Arduino-ethernet");
+    client.println("Connection: close");
+    client.println();
+
+    // note the time that the connection was made:
+    lastConnectionTime = millis();
+  } 
+  else {
+    // if you couldn't make a connection:
+    Serial.println("Connection failed");
+    Serial.println("Disconnecting...");
+    client.stop();
+  }
+}
+
+
+void printStatus() {
+  #ifdef WIFI
+    // print the SSID of the network you're attached to:
+    Serial.print("SSID: ");
+    Serial.println(WiFi.SSID());
+
+    // print your WiFi shield's IP address:
+    IPAddress ip = WiFi.localIP();
+    Serial.print("IP Address: ");
+    Serial.println(ip);
+
+    // print the received signal strength:
+    long rssi = WiFi.RSSI();
+    Serial.print("signal strength (RSSI):");
+    Serial.print(rssi);
+    Serial.print(" dBm");
+  #else
+    // print your local IP address:
+    Serial.print("IP address: ");
+    for (byte thisByte = 0; thisByte < 4; thisByte++) {
+      // print the value of each byte of the IP address:
+      Serial.print(Ethernet.localIP()[thisByte], DEC);
+      Serial.print("."); 
+    }  
+  #endif
+  Serial.println();
+}
